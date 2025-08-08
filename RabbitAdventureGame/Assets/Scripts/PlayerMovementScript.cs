@@ -5,11 +5,12 @@ using UnityEngine;
 
 public class PlayerMovementScript : MonoBehaviour
 {
-
-    public float moveSpeed = 5f; 
+    public float moveSpeed = 5f;
     public float sprintSpeed = 8f;
-    public float jumpForce = 5f;
-    public float doubleJumpForce = 7f;
+    public float jumpForce = 3f;
+    public float doubleJumpForce = 5f;
+    public float chargeJumpForce = 15f;
+    public float chargeTime = 1f;
     public float rotationSpeed = 120f;
     public LayerMask groundMask;
     public float groundCheckDistance = 0.1f;
@@ -17,57 +18,44 @@ public class PlayerMovementScript : MonoBehaviour
 
     public int maxJumps = 2;
 
-
-
-
     private Rigidbody rb;
-    
     private int jumpCount;
+    private float jumpCharge;
+    private bool isChargingJump = false;
+    private float chargeStartTime;
+    private bool isGrounded = true;
+    private bool isFalling;
 
     public Animator animator;
-    public float runSpeed = 5f;
 
     private Vector3 lastCameraForward;
 
-    bool isGrounded = true;
-    bool isSprinting;
-    bool isFailing;
-    
-
-    // Start is called before the first frame update
+    // Start
     void Start()
     {
         rb = GetComponent<Rigidbody>();
-        
         rb.freezeRotation = true;
+
         lastCameraForward = cameraTransform.forward;
         lastCameraForward.y = 0f;
         lastCameraForward.Normalize();
     }
 
-    // Update is called once per frame
+    // Update
     void Update()
     {
         HandleRotation();
         HandleJump();
-
-        float moveX = Input.GetAxis("Horizontal");
-        float moveZ = Input.GetAxis("Vertical");
-        
-        // Feed movement into Animator
-        if (animator != null)
-        {
-            animator.SetFloat("Horizontal", moveX);
-            animator.SetFloat("Vertical", moveZ);
-        }
-
-        bool isSprinting = moveZ > 0.1f && Input.GetKey(KeyCode.LeftShift);
-        animator.SetBool("IsSprinting", isSprinting);
-
-
-
+        HandleAnimator();
     }
+
     void FixedUpdate()
+    {
+        HandleMovement();
+    }
+
+    // Movement Logic
+    void HandleMovement()
     {
         float moveX = Input.GetAxis("Horizontal");
         float moveZ = Input.GetAxis("Vertical");
@@ -76,7 +64,7 @@ public class PlayerMovementScript : MonoBehaviour
 
         if (inputDirection.magnitude >= 0.1f)
         {
-            // Get camera-relative directions
+            // Camera-relative movement
             Vector3 camForward = cameraTransform.forward;
             Vector3 camRight = cameraTransform.right;
             camForward.y = 0f;
@@ -85,21 +73,21 @@ public class PlayerMovementScript : MonoBehaviour
             camRight.Normalize();
 
             Vector3 moveDirection = camForward * moveZ + camRight * moveX;
+            float currentSpeed = Input.GetKey(KeyCode.LeftShift) && moveZ > 0.1f ? sprintSpeed : moveSpeed;
 
-            // Apply movement to rigidbody
-            Vector3 move = moveDirection.normalized * moveSpeed;
+            // Move player
+            Vector3 move = moveDirection.normalized * currentSpeed;
             rb.velocity = new Vector3(move.x, rb.velocity.y, move.z);
         }
         else
         {
-            // No movement input: stop horizontal motion
             rb.velocity = new Vector3(0f, rb.velocity.y, 0f);
         }
     }
 
+    // Camera-based Rotation
     void HandleRotation()
     {
-        // Only rotate the player when the camera's forward direction has changed
         Vector3 currentCameraForward = cameraTransform.forward;
         currentCameraForward.y = 0;
         currentCameraForward.Normalize();
@@ -115,6 +103,9 @@ public class PlayerMovementScript : MonoBehaviour
     void HandleJump()
     {
         bool jumpPressed = Input.GetButtonDown("Jump");
+        bool jumpHeld = Input.GetButton("Jump");
+        bool jumpReleased = Input.GetButtonUp("Jump");
+        bool shiftHeld = Input.GetKey(KeyCode.LeftShift);
 
         // Ground check
         isGrounded = Physics.Raycast(transform.position, Vector3.down, groundCheckDistance + 0.1f, groundMask);
@@ -125,42 +116,91 @@ public class PlayerMovementScript : MonoBehaviour
             animator.SetBool("IsFalling", false);
         }
 
-        if (jumpPressed && jumpCount < maxJumps)
+        // START charging jump
+        if (shiftHeld && jumpPressed && isGrounded)
         {
-            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z); // reset vertical velocity
+            isChargingJump = true;
+            chargeStartTime = Time.time;
+            animator.SetBool("IsChargingJump", true); // Optional animation
+            Debug.LogError("Charging");
+        }
 
-            if (jumpCount == 0)
+        // UPDATE charging jump
+        if (isChargingJump && jumpHeld)
+        {
+            jumpCharge = Mathf.Clamp01((Time.time - chargeStartTime) / chargeTime);
+        }
+
+        // RELEASE charged jump
+        if (isChargingJump && jumpReleased)
+        {
+            isChargingJump = false;
+            float chargePower = Mathf.Lerp(jumpForce, chargeJumpForce, jumpCharge);
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z); // Reset Y
+            rb.AddForce(Vector3.up * chargePower, ForceMode.Impulse);
+            animator.SetTrigger("ChargeJump"); // Optional animation
+            animator.SetBool("IsChargingJump", false);
+            jumpCount = 2;
+            return; // Skip normal/double jump logic
+        }
+
+        // NORMAL and DOUBLE jump
+        if (jumpPressed && jumpCount < maxJumps && !isChargingJump)
+        {
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+
+            if (jumpCount == 0 && isGrounded)
             {
-                // First jump
                 rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
                 animator.SetTrigger("Jump");
             }
             else if (jumpCount == 1)
             {
-                // Second jump (double jump)
                 rb.AddForce(Vector3.up * doubleJumpForce, ForceMode.Impulse);
-                animator.SetTrigger("DoubleJump"); // <-- Different animation trigger
+                animator.SetTrigger("DoubleJump");
             }
 
             jumpCount++;
         }
 
-        // Falling animation toggle
-        animator.SetBool("IsFalling", !isGrounded && rb.velocity.y < 0);
+        // Falling logic
+        animator.SetBool("IsFalling", !isGrounded && rb.velocity.y < -1);
+    }
+
+
+    // Animator Parameter Logic
+    void HandleAnimator()
+    {
+        float moveX = Input.GetAxis("Horizontal");
+        float moveZ = Input.GetAxis("Vertical");
+
+        // Camera-relative direction
+        Vector3 camForward = cameraTransform.forward;
+        Vector3 camRight = cameraTransform.right;
+        camForward.y = 0f;
+        camRight.y = 0f;
+        camForward.Normalize();
+        camRight.Normalize();
+
+        Vector3 moveDirection = camForward * moveZ + camRight * moveX;
+
+        // Convert world move to local
+        Vector3 localMove = transform.InverseTransformDirection(moveDirection);
+        animator.SetFloat("Horizontal", localMove.x);
+        animator.SetFloat("Vertical", localMove.z);
+
+        bool isSprinting = moveZ > 0.1f && Input.GetKey(KeyCode.LeftShift);
+        animator.SetBool("IsSprinting", isSprinting);
     }
 
     private void OnCollisionEnter(Collision collision)
     {
-
-        if (collision.gameObject.tag == "Ground")
+        if (collision.gameObject.CompareTag("Ground"))
         {
             isGrounded = true;
             jumpCount = 0;
-            maxJumps = 2;
             animator.ResetTrigger("Jump");
             animator.ResetTrigger("DoubleJump");
-            Debug.LogError("Grounded = True");
         }
     }
-
 }
